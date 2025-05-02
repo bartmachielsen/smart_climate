@@ -18,6 +18,13 @@ CONF_OUTDOOR_HOT_THRESHOLD = "outdoor_hot_threshold"  # e.g. 25°C or higher.
 CONF_PRIMARY_OFFSET = "primary_offset"
 CONF_SECONDARY_OFFSET = "secondary_offset"
 
+# Configuration keys for min/max temperatures
+CONF_MAIN_MIN_TEMP = "main_min_temp"
+CONF_MAIN_MAX_TEMP = "main_max_temp"
+CONF_SECONDARY_MIN_TEMP = "secondary_min_temp"
+CONF_SECONDARY_MAX_TEMP = "secondary_max_temp"
+CONF_SECONDARY_SUPPORTS_COOLING = "secondary_supports_cooling"
+
 CONF_HEATING_PRESETS = "heating_presets"
 CONF_COOLING_PRESETS = "cooling_presets"
 
@@ -50,3 +57,10 @@ DEFAULT_OUTDOOR_HOT_THRESHOLD = DEFAULT_COOLING_PRESETS["home"]
 # Default offsets.
 DEFAULT_PRIMARY_OFFSET = 1.0
 DEFAULT_SECONDARY_OFFSET = 0.0
+
+# Default min/max temperatures
+DEFAULT_MAIN_MIN_TEMP = 7.0
+DEFAULT_MAIN_MAX_TEMP = 35.0
+DEFAULT_SECONDARY_MIN_TEMP = 7.0
+DEFAULT_SECONDARY_MAX_TEMP = 35.0
+DEFAULT_SECONDARY_SUPPORTS_COOLING = False

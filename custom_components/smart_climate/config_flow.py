@@ -17,11 +17,21 @@ from .const import (
     CONF_OUTDOOR_HOT_THRESHOLD,
     CONF_PRIMARY_OFFSET,
     CONF_SECONDARY_OFFSET,
+    CONF_MAIN_MIN_TEMP,
+    CONF_MAIN_MAX_TEMP,
+    CONF_SECONDARY_MIN_TEMP,
+    CONF_SECONDARY_MAX_TEMP,
+    CONF_SECONDARY_SUPPORTS_COOLING,
     DEFAULT_TEMP_THRESHOLD_PRIMARY,
     DEFAULT_TEMP_THRESHOLD_SECONDARY,
     DEFAULT_OUTDOOR_HOT_THRESHOLD,
     DEFAULT_PRIMARY_OFFSET,
-    DEFAULT_SECONDARY_OFFSET
+    DEFAULT_SECONDARY_OFFSET,
+    DEFAULT_MAIN_MIN_TEMP,
+    DEFAULT_MAIN_MAX_TEMP,
+    DEFAULT_SECONDARY_MIN_TEMP,
+    DEFAULT_SECONDARY_MAX_TEMP,
+    DEFAULT_SECONDARY_SUPPORTS_COOLING
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +61,11 @@ class SmartClimateOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(CONF_OUTDOOR_HOT_THRESHOLD, default=current_options.get(CONF_OUTDOOR_HOT_THRESHOLD, DEFAULT_OUTDOOR_HOT_THRESHOLD)): vol.Coerce(float),
             vol.Optional(CONF_PRIMARY_OFFSET, default=current_options.get(CONF_PRIMARY_OFFSET, DEFAULT_PRIMARY_OFFSET)): vol.Coerce(float),
             vol.Optional(CONF_SECONDARY_OFFSET, default=current_options.get(CONF_SECONDARY_OFFSET, DEFAULT_SECONDARY_OFFSET)): vol.Coerce(float),
+            vol.Optional(CONF_MAIN_MIN_TEMP, default=current_options.get(CONF_MAIN_MIN_TEMP, DEFAULT_MAIN_MIN_TEMP)): vol.Coerce(float),
+            vol.Optional(CONF_MAIN_MAX_TEMP, default=current_options.get(CONF_MAIN_MAX_TEMP, DEFAULT_MAIN_MAX_TEMP)): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_MIN_TEMP, default=current_options.get(CONF_SECONDARY_MIN_TEMP, DEFAULT_SECONDARY_MIN_TEMP)): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_MAX_TEMP, default=current_options.get(CONF_SECONDARY_MAX_TEMP, DEFAULT_SECONDARY_MAX_TEMP)): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_SUPPORTS_COOLING, default=current_options.get(CONF_SECONDARY_SUPPORTS_COOLING, DEFAULT_SECONDARY_SUPPORTS_COOLING)): cv.boolean,
         })
 
         return self.async_show_form(step_id="init", data_schema=data_schema)
@@ -76,6 +91,11 @@ class SmartClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_OUTDOOR_HOT_THRESHOLD, default=DEFAULT_OUTDOOR_HOT_THRESHOLD): vol.Coerce(float),
             vol.Optional(CONF_PRIMARY_OFFSET, default=DEFAULT_PRIMARY_OFFSET): vol.Coerce(float),
             vol.Optional(CONF_SECONDARY_OFFSET, default=DEFAULT_SECONDARY_OFFSET): vol.Coerce(float),
+            vol.Optional(CONF_MAIN_MIN_TEMP, default=DEFAULT_MAIN_MIN_TEMP): vol.Coerce(float),
+            vol.Optional(CONF_MAIN_MAX_TEMP, default=DEFAULT_MAIN_MAX_TEMP): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_MIN_TEMP, default=DEFAULT_SECONDARY_MIN_TEMP): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_MAX_TEMP, default=DEFAULT_SECONDARY_MAX_TEMP): vol.Coerce(float),
+            vol.Optional(CONF_SECONDARY_SUPPORTS_COOLING, default=DEFAULT_SECONDARY_SUPPORTS_COOLING): cv.boolean,
         })
         return self.async_show_form(
             step_id="user",
