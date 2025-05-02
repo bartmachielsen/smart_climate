@@ -50,10 +50,10 @@ DEFAULT_COOLING_PRESETS = {
     "eco": None,
     "away": None,
     "sleep": None,
-    "comfort": 24,
-    "boost": 22,
-    "home": 25,
-    "activity": 25
+    "comfort": 21,
+    "boost": 19,
+    "home": 24,
+    "activity": 24
 }
 DEFAULT_OUTDOOR_HOT_THRESHOLD = DEFAULT_COOLING_PRESETS["home"]
 
