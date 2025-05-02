@@ -32,6 +32,9 @@ CONF_COOLING_PRESETS = "cooling_presets"
 DEFAULT_TEMP_THRESHOLD_PRIMARY = 0.0
 DEFAULT_TEMP_THRESHOLD_SECONDARY = 2.0
 
+# Special preset modes
+PRESET_MODE_MANUAL = "manual"
+
 DEFAULT_HEATING_PRESETS = {
     "none": None,
     "eco": 15,

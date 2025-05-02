@@ -14,6 +14,7 @@ from homeassistant.util.dt import now
 from homeassistant.helpers.event import async_track_time_interval  # <-- Import periodic tracker
 from homeassistant.helpers.restore_state import RestoreEntity  # <-- Import restore state
 from .const import *
+from .const import PRESET_MODE_MANUAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,10 +95,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 class SmartClimate(ClimateEntity, RestoreEntity):
-    """A smart climate controller that self-manages its subdevices while always reporting 'auto'."""
+    """A smart climate controller that self-manages its subdevices."""
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_supported_features = ClimateEntityFeature.PRESET_MODE
-    _attr_hvac_modes = [HVACMode.AUTO]
+    _attr_supported_features = ClimateEntityFeature.PRESET_MODE | ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_hvac_modes = [HVACMode.AUTO, HVACMode.OFF]
 
     def __init__(self, hass, main_climate, secondary_climate, sensor, outdoor_sensor,
                  primary_threshold, secondary_threshold, heating_presets, cooling_presets,
@@ -133,7 +134,7 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         # Attributes shown by Home Assistant.
         self._attr_target_temperature = None
         self._attr_current_temperature = None
-        self._attr_hvac_mode = HVACMode.AUTO
+        self._attr_hvac_mode = HVACMode.AUTO  # Default to AUTO mode
         self._attr_preset_mode = "eco"
 
         self._update_unsub = None
@@ -169,7 +170,7 @@ class SmartClimate(ClimateEntity, RestoreEntity):
     @property
     def preset_modes(self):
         """Return a list of available preset modes."""
-        return list({**self._heating_presets, **self._cooling_presets}.keys())
+        return [PRESET_MODE_MANUAL] + list({**self._heating_presets, **self._cooling_presets}.keys())
 
     @property
     def extra_state_attributes(self):
@@ -181,6 +182,8 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             "secondary_min_temp": self._secondary_min_temp,
             "secondary_max_temp": self._secondary_max_temp,
             "secondary_supports_cooling": self._secondary_supports_cooling,
+            "is_manual_mode": self._attr_preset_mode == PRESET_MODE_MANUAL,
+            "is_off_mode": self._attr_hvac_mode == HVACMode.OFF,
         }
 
     @property
@@ -203,10 +206,43 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         """Return the entity_id of the secondary climate device, if configured."""
         return self._secondary_climate
 
+    async def async_set_hvac_mode(self, hvac_mode):
+        """Set new hvac mode."""
+        if hvac_mode == HVACMode.OFF:
+            # Turn off both climate devices
+            await self._set_effective_main_hvac_mode(HVACMode.OFF)
+            if self._secondary_climate:
+                await self._set_effective_secondary(HVACMode.OFF)
+            self._attr_hvac_mode = HVACMode.OFF
+            _LOGGER.debug("HVAC mode set to OFF; Climate devices turned off")
+            self.async_write_ha_state()
+        elif hvac_mode == HVACMode.AUTO:
+            self._attr_hvac_mode = HVACMode.AUTO
+            _LOGGER.debug("HVAC mode set to AUTO")
+            await self._apply_temperature()
+            self.async_write_ha_state()
+        else:
+            _LOGGER.error("Unsupported HVAC mode: %s", hvac_mode)
+
     async def async_set_preset_mode(self, preset_mode):
         """Set a new preset mode and update the target temperature accordingly.
         """
-        if preset_mode not in self._heating_presets and preset_mode not in self._cooling_presets:
+        # If in OFF mode, switch to AUTO mode
+        if self._attr_hvac_mode == HVACMode.OFF:
+            # self._attr_hvac_mode = HVACMode.AUTO
+            # _LOGGER.debug("Switching to AUTO mode from OFF due to preset mode change")
+            return
+
+        if preset_mode == PRESET_MODE_MANUAL:
+            self._attr_preset_mode = preset_mode
+            # Keep the current target temperature if it exists, otherwise set a default
+            if self._attr_target_temperature is None:
+                self._attr_target_temperature = 20  # Default temperature for manual mode
+            _LOGGER.debug("Preset mode set to %s; Target temp: %s", preset_mode, self._attr_target_temperature)
+            await self._apply_temperature()
+            self.async_write_ha_state()
+            return
+        elif preset_mode not in self._heating_presets and preset_mode not in self._cooling_presets:
             _LOGGER.error("Preset mode %s not recognized", preset_mode)
             return
 
@@ -217,6 +253,11 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def _apply_temperature(self):
+        # If HVAC mode is off, don't do anything
+        if self._attr_hvac_mode == HVACMode.OFF:
+            _LOGGER.debug("HVAC mode is off, not applying temperature")
+            return
+
         sensor_state = self.hass.states.get(self._sensor)
         if sensor_state is None or sensor_state.state in ["unknown", "unavailable"]:
             _LOGGER.error("Sensor %s not found or state is unknown/unavailable", self._sensor)
@@ -228,55 +269,87 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             _LOGGER.error("Error reading sensor %s: %s", self._sensor, e)
             return
 
-        # First check outdoor temperature to determine if it's hot or warm outside
-        outdoor_temp = None
-        is_hot_outside = False
-
-        # Check if both temperatures are available before calculating the difference
-        if self._attr_target_temperature is None or self._attr_current_temperature is None:
-            _LOGGER.debug("Cannot calculate temperature difference: target_temp=%s, current_temp=%s", 
-                         self._attr_target_temperature, self._attr_current_temperature)
-            diff = 0
-        else:
-            diff = self._attr_target_temperature - self._attr_current_temperature
-
-        effective_mode = HVACMode.OFF
-
-        if self._outdoor_sensor:
-            outdoor_state = self.hass.states.get(self._outdoor_sensor)
-            if outdoor_state is not None and outdoor_state.state not in ["unknown", "unavailable"]:
-                try:
-                    outdoor_temp = float(outdoor_state.state)
-                    is_hot_outside = outdoor_temp >= self._outdoor_hot_threshold
-                except Exception as e:
-                    _LOGGER.error("Error reading outdoor sensor %s: %s", self._outdoor_sensor, e)
-            else:
-                _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
-
-        # Determine effective mode based on the primary threshold and outdoor temperature
-        if is_hot_outside:
-            if diff < -self._primary_threshold:
-                effective_mode = HVACMode.COOL
-                _LOGGER.debug(
-                    "Using cooling instead of heating because outdoor temperature (%s) is above threshold (%s)",
-                    outdoor_temp, self._outdoor_hot_threshold
-                )
-        else:
-            if diff > self._primary_threshold:
+        # For manual mode, use the current target temperature directly
+        if self._attr_preset_mode == PRESET_MODE_MANUAL:
+            # Determine if we need heating or cooling based on current vs target temperature
+            if self._attr_target_temperature is None:
+                effective_mode = HVACMode.OFF
+            elif self._attr_current_temperature < self._attr_target_temperature:
                 effective_mode = HVACMode.HEAT
-                _LOGGER.debug(
-                    "Using heating instead of cooling because outdoor temperature (%s) is below threshold (%s)",
-                    outdoor_temp, self._outdoor_hot_threshold
-                )
+            elif self._attr_current_temperature > self._attr_target_temperature:
+                effective_mode = HVACMode.COOL
+            else:
+                # If current temperature equals target, maintain current mode or use heat as default
+                main_state = self.hass.states.get(self.effective_main_device)
+                if main_state and main_state.state in [HVACMode.HEAT, HVACMode.COOL]:
+                    effective_mode = main_state.state
+                else:
+                    effective_mode = HVACMode.HEAT
 
-        if effective_mode == HVACMode.HEAT:
-            self._attr_target_temperature = self._heating_presets.get(self._attr_preset_mode)
-        elif effective_mode == HVACMode.COOL:
-            self._attr_target_temperature = self._cooling_presets.get(self._attr_preset_mode)
+            # Calculate temperature difference for logging
+            temp_diff = 0
+            if self._attr_target_temperature is not None and self._attr_current_temperature is not None:
+                temp_diff = self._attr_target_temperature - self._attr_current_temperature
+
+            _LOGGER.debug("Manual mode: Current temp: %s, Target temp: %s, Diff: %s, Effective mode: %s",
+                         self._attr_current_temperature, self._attr_target_temperature, 
+                         temp_diff, effective_mode)
         else:
-            self._attr_target_temperature = None
+            # For automatic modes, use the existing logic
+            # First check outdoor temperature to determine if it's hot or warm outside
+            outdoor_temp = None
+            is_hot_outside = False
+
+            # Check if both temperatures are available before calculating the difference
+            if self._attr_target_temperature is None or self._attr_current_temperature is None:
+                _LOGGER.debug("Cannot calculate temperature difference: target_temp=%s, current_temp=%s", 
+                             self._attr_target_temperature, self._attr_current_temperature)
+                diff = 0
+            else:
+                diff = self._attr_target_temperature - self._attr_current_temperature
+
             effective_mode = HVACMode.OFF
-            _LOGGER.debug("No effective mode set; target temperature remains None")
+
+            if self._outdoor_sensor:
+                outdoor_state = self.hass.states.get(self._outdoor_sensor)
+                if outdoor_state is not None and outdoor_state.state not in ["unknown", "unavailable"]:
+                    try:
+                        outdoor_temp = float(outdoor_state.state)
+                        is_hot_outside = outdoor_temp >= self._outdoor_hot_threshold
+                    except Exception as e:
+                        _LOGGER.error("Error reading outdoor sensor %s: %s", self._outdoor_sensor, e)
+                else:
+                    _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
+
+            # Determine effective mode based on the primary threshold and outdoor temperature
+            if is_hot_outside:
+                _LOGGER.debug("Outdoor temperature %s is above threshold %s", outdoor_temp, self._outdoor_hot_threshold)
+                if diff < -self._primary_threshold:
+                    effective_mode = HVACMode.COOL
+                    _LOGGER.debug(
+                        "Using cooling instead of heating because outdoor temperature (%s) is above threshold (%s)",
+                        outdoor_temp, self._outdoor_hot_threshold
+                    )
+            else:
+                if diff > self._primary_threshold:
+                    effective_mode = HVACMode.HEAT
+                    _LOGGER.debug(
+                        "Using heating instead of cooling because outdoor temperature (%s) is below threshold (%s)",
+                        outdoor_temp, self._outdoor_hot_threshold
+                    )
+
+            if effective_mode == HVACMode.HEAT:
+                self._attr_target_temperature = self._heating_presets.get(self._attr_preset_mode)
+            elif effective_mode == HVACMode.COOL:
+                self._attr_target_temperature = self._cooling_presets.get(self._attr_preset_mode)
+            else:
+                self._attr_target_temperature = None
+                effective_mode = HVACMode.OFF
+                _LOGGER.debug("No effective mode set; target temperature remains None")
+
+        # Ensure diff is defined for both manual and automatic modes
+        if 'diff' not in locals():
+            diff = temp_diff if 'temp_diff' in locals() else 0
 
         _LOGGER.debug(
             "Current temp: %s, Target temp: %s, Diff: %s, Effective mode: %s, Primary Threshold: %s, Secondary Threshold: %s",
@@ -300,7 +373,9 @@ class SmartClimate(ClimateEntity, RestoreEntity):
 
         # Signal secondary device only if configured and a change is required.
         if self._secondary_climate is not None:
-            secondary_effective_mode = effective_mode if diff > self._secondary_threshold else HVACMode.OFF
+            # Use the appropriate diff variable based on the mode
+            current_diff = diff
+            secondary_effective_mode = effective_mode if current_diff > self._secondary_threshold else HVACMode.OFF
             # Apply the secondary offset here.
             secondary_temp = None
             if secondary_effective_mode != HVACMode.OFF and self._attr_target_temperature is not None:
@@ -386,13 +461,21 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             _LOGGER.error("Sensor %s state is unknown or unavailable during update", self._sensor)
 
     async def async_added_to_hass(self):
-        """Restore preset and target temperature on startup, then start periodic updates."""
+        """Restore hvac_mode, preset and target temperature on startup, then start periodic updates."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
         if last_state:
+            # Restore hvac_mode
+            if last_state.state in [HVACMode.AUTO, HVACMode.OFF]:
+                self._attr_hvac_mode = last_state.state
+            else:
+                self._attr_hvac_mode = HVACMode.AUTO
+
+            # Restore preset_mode and target_temperature
             self._attr_preset_mode = last_state.attributes.get("preset_mode", "eco")
             self._attr_target_temperature = last_state.attributes.get("target_temperature", self._attr_target_temperature)
-            _LOGGER.debug("Restored state: preset_mode=%s, target_temperature=%s", self._attr_preset_mode, self._attr_target_temperature)
+            _LOGGER.debug("Restored state: hvac_mode=%s, preset_mode=%s, target_temperature=%s", 
+                         self._attr_hvac_mode, self._attr_preset_mode, self._attr_target_temperature)
         self._update_unsub = async_track_time_interval(
             self.hass, self._periodic_update, timedelta(seconds=60)
         )
@@ -402,6 +485,36 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             self._update_unsub()
             self._update_unsub = None
 
-    async def _periodic_update(self, now_time):
+    async def async_set_temperature(self, **kwargs):
+        """Set new target temperature."""
+        temperature = kwargs.get("temperature")
+        if temperature is None:
+            return
+
+        # Ensure temperature is within min/max limits
+        if temperature < self._main_min_temp:
+            temperature = self._main_min_temp
+        elif temperature > self._main_max_temp:
+            temperature = self._main_max_temp
+
+        self._attr_target_temperature = temperature
+
+        # If in OFF mode, switch to AUTO mode
+        if self._attr_hvac_mode == HVACMode.OFF:
+            self._attr_hvac_mode = HVACMode.AUTO
+            _LOGGER.debug("Switching to AUTO mode from OFF due to temperature set")
+
+        # If not already in manual mode, switch to it
+        if self._attr_preset_mode != PRESET_MODE_MANUAL:
+            self._attr_preset_mode = PRESET_MODE_MANUAL
+            _LOGGER.debug("Switching to manual mode due to temperature set")
+
+        _LOGGER.debug("Target temperature set to %s in manual mode", temperature)
         await self._apply_temperature()
+        self.async_write_ha_state()
+
+    async def _periodic_update(self, now_time):
+        # Only apply temperature if not in OFF mode
+        if self._attr_hvac_mode != HVACMode.OFF:
+            await self._apply_temperature()
         self.async_write_ha_state()
