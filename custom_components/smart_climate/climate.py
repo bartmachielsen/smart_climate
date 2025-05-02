@@ -320,6 +320,8 @@ class SmartClimate(ClimateEntity, RestoreEntity):
                         _LOGGER.error("Error reading outdoor sensor %s: %s", self._outdoor_sensor, e)
                 else:
                     _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
+                    outdoor_temp = self._attr_current_temperature
+                    is_hot_outside = outdoor_temp >= self._outdoor_hot_threshold
 
             # Determine effective mode based on the primary threshold and outdoor temperature
             if is_hot_outside:
