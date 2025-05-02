@@ -99,7 +99,6 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         self._heating_presets = heating_presets
         self._cooling_presets = cooling_presets
         self._outdoor_hot_threshold = outdoor_hot_threshold
-        self._last_switch_time = now()
 
         # We'll check actual device states to avoid redundant service calls.
 
@@ -240,9 +239,11 @@ class SmartClimate(ClimateEntity, RestoreEntity):
 
         now_time = now()
 
-        # First check outdoor temperature to determine if it's hot outside
+        # First check outdoor temperature to determine if it's hot or warm outside
         outdoor_temp = None
         is_hot_outside = False
+        diff = self._attr_target_temperature - self._attr_current_temperature
+        effective_mode = HVACMode.OFF
 
         if self._outdoor_sensor:
             outdoor_state = self.hass.states.get(self._outdoor_sensor)
@@ -256,33 +257,20 @@ class SmartClimate(ClimateEntity, RestoreEntity):
                 _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
 
         # Determine effective mode based on the primary threshold and outdoor temperature
-        if self._attr_current_temperature < self._attr_target_temperature - self._primary_threshold:
-            # If it's hot outside, prefer cooling even if indoor temperature is below target
-            if is_hot_outside:
+        if is_hot_outside:
+            if diff < -self._primary_threshold:
                 effective_mode = HVACMode.COOL
                 _LOGGER.debug(
                     "Using cooling instead of heating because outdoor temperature (%s) is above threshold (%s)",
                     outdoor_temp, self._outdoor_hot_threshold
                 )
-            else:
+        else:
+            if diff > self._primary_threshold:
                 effective_mode = HVACMode.HEAT
-            diff = self._attr_target_temperature - self._attr_current_temperature
-
-        elif self._attr_current_temperature > self._attr_target_temperature + self._primary_threshold:
-            diff = self._attr_current_temperature - self._attr_target_temperature
-
-            # If it's hot outside, use cooling
-            if is_hot_outside:
-                effective_mode = HVACMode.COOL
-            else:
-                effective_mode = HVACMode.OFF
                 _LOGGER.debug(
-                    "Cooling suppressed: outdoor temperature (%s) below threshold (%s)",
+                    "Using heating instead of cooling because outdoor temperature (%s) is below threshold (%s)",
                     outdoor_temp, self._outdoor_hot_threshold
                 )
-        else:
-            effective_mode = HVACMode.OFF
-            diff = 0
 
         _LOGGER.debug(
             "Current temp: %s, Target temp: %s, Diff: %s, Effective mode: %s, Primary Threshold: %s, Secondary Threshold: %s",
@@ -327,9 +315,6 @@ class SmartClimate(ClimateEntity, RestoreEntity):
                     await self._set_effective_secondary(secondary_effective_mode, secondary_temp)
                 else:
                     _LOGGER.debug("Secondary device state remains unchanged; no update required")
-
-        if effective_mode != HVACMode.OFF:
-            self._last_switch_time = now_time
 
     async def _set_effective_main_temperature(self, temperature):
         service_data = {
