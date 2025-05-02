@@ -164,16 +164,6 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         """Return the entity_id of the secondary climate device, if configured."""
         return self._secondary_climate
 
-    async def async_set_temperature(self, **kwargs):
-        """Set a new target temperature (manual override)."""
-        temperature = kwargs.get("temperature")
-        if temperature is None:
-            return
-
-        self._attr_target_temperature = temperature
-        await self._apply_temperature()
-        self.async_write_ha_state()
-
     async def async_set_preset_mode(self, preset_mode):
         """Set a new preset mode and update the target temperature accordingly.
         """
@@ -182,33 +172,6 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             return
 
         self._attr_preset_mode = preset_mode
-
-        sensor_state = self.hass.states.get(self._sensor)
-        current_temp = None
-        if sensor_state is not None and sensor_state.state not in ["unknown", "unavailable"]:
-            try:
-                current_temp = float(sensor_state.state)
-            except Exception as e:
-                _LOGGER.error("Error reading sensor %s: %s", self._sensor, e)
-
-        if current_temp is not None and preset_mode in self._heating_presets and preset_mode in self._cooling_presets:
-            heating_target = self._heating_presets[preset_mode]
-            cooling_target = self._cooling_presets[preset_mode]
-            if heating_target is None:
-                self._attr_target_temperature = cooling_target
-            elif cooling_target is None:
-                self._attr_target_temperature = heating_target
-            else:
-                midpoint = (heating_target + cooling_target) / 2
-                if current_temp < midpoint:
-                    self._attr_target_temperature = heating_target
-                else:
-                    self._attr_target_temperature = cooling_target
-
-        elif preset_mode in self._heating_presets:
-            self._attr_target_temperature = self._heating_presets[preset_mode]
-        elif preset_mode in self._cooling_presets:
-            self._attr_target_temperature = self._cooling_presets[preset_mode]
 
         _LOGGER.debug("Preset mode set to %s; Target temp: %s", preset_mode, self._attr_target_temperature)
         await self._apply_temperature()
@@ -225,19 +188,6 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         except Exception as e:
             _LOGGER.error("Error reading sensor %s: %s", self._sensor, e)
             return
-
-        if self._attr_target_temperature is None:
-            _LOGGER.debug("No target temperature set (preset mode None); turning off HVAC devices")
-            main_state = self.hass.states.get(self.effective_main_device)
-            if main_state is not None and main_state.state != HVACMode.OFF:
-                await self._set_effective_main_hvac_mode(HVACMode.OFF)
-            if self._secondary_climate is not None:
-                secondary_state = self.hass.states.get(self.effective_secondary_device)
-                if secondary_state is not None and secondary_state.state != HVACMode.OFF:
-                    await self._set_effective_secondary(HVACMode.OFF)
-            return
-
-        now_time = now()
 
         # First check outdoor temperature to determine if it's hot or warm outside
         outdoor_temp = None
@@ -272,6 +222,15 @@ class SmartClimate(ClimateEntity, RestoreEntity):
                     outdoor_temp, self._outdoor_hot_threshold
                 )
 
+        if effective_mode == HVACMode.HEAT:
+            self._attr_target_temperature = self._heating_presets.get(self._attr_preset_mode)
+        elif effective_mode == HVACMode.COOL:
+            self._attr_target_temperature = self._cooling_presets.get(self._attr_preset_mode)
+        else:
+            self._attr_target_temperature = None
+            effective_mode = HVACMode.OFF
+            _LOGGER.debug("No effective mode set; target temperature remains None")
+
         _LOGGER.debug(
             "Current temp: %s, Target temp: %s, Diff: %s, Effective mode: %s, Primary Threshold: %s, Secondary Threshold: %s",
             self._attr_current_temperature, self._attr_target_temperature,
@@ -290,13 +249,7 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             _LOGGER.debug("Main device HVAC mode remains %s; no update required", effective_mode)
 
         if effective_mode != HVACMode.OFF and self._attr_target_temperature is not None:
-            # Apply the primary offset here.
-            main_target = self._attr_target_temperature + self._primary_offset
-            current_temp = main_state.attributes.get("temperature")
-            if current_temp != main_target:
-                await self._set_effective_main_temperature(main_target)
-            else:
-                _LOGGER.debug("Main device temperature remains %s; no update required", main_target)
+            await self._set_effective_main_temperature(self._attr_target_temperature)
 
         # Signal secondary device only if configured and a change is required.
         if self._secondary_climate is not None:
