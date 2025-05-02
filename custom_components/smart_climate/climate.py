@@ -101,11 +101,7 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         self._outdoor_hot_threshold = outdoor_hot_threshold
         self._last_switch_time = now()
 
-        # Track last commands sent to avoid redundant service calls.
-        self._last_main_mode = HVACMode.OFF
-        self._last_main_temp = None
-        self._last_secondary_mode = HVACMode.OFF
-        self._last_secondary_temp = None
+        # We'll check actual device states to avoid redundant service calls.
 
         # Offsets for target temperature.
         self._primary_offset = primary_offset
@@ -233,44 +229,57 @@ class SmartClimate(ClimateEntity, RestoreEntity):
 
         if self._attr_target_temperature is None:
             _LOGGER.debug("No target temperature set (preset mode None); turning off HVAC devices")
-            if self._last_main_mode != HVACMode.OFF:
+            main_state = self.hass.states.get(self.effective_main_device)
+            if main_state is not None and main_state.state != HVACMode.OFF:
                 await self._set_effective_main_hvac_mode(HVACMode.OFF)
-                self._last_main_mode = HVACMode.OFF
-            if self._secondary_climate is not None and self._last_secondary_mode != HVACMode.OFF:
-                await self._set_effective_secondary(HVACMode.OFF)
-                self._last_secondary_mode = HVACMode.OFF
+            if self._secondary_climate is not None:
+                secondary_state = self.hass.states.get(self.effective_secondary_device)
+                if secondary_state is not None and secondary_state.state != HVACMode.OFF:
+                    await self._set_effective_secondary(HVACMode.OFF)
             return
 
         now_time = now()
 
-        # Determine effective mode based on the primary threshold.
+        # First check outdoor temperature to determine if it's hot outside
+        outdoor_temp = None
+        is_hot_outside = False
+
+        if self._outdoor_sensor:
+            outdoor_state = self.hass.states.get(self._outdoor_sensor)
+            if outdoor_state is not None and outdoor_state.state not in ["unknown", "unavailable"]:
+                try:
+                    outdoor_temp = float(outdoor_state.state)
+                    is_hot_outside = outdoor_temp >= self._outdoor_hot_threshold
+                except Exception as e:
+                    _LOGGER.error("Error reading outdoor sensor %s: %s", self._outdoor_sensor, e)
+            else:
+                _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
+
+        # Determine effective mode based on the primary threshold and outdoor temperature
         if self._attr_current_temperature < self._attr_target_temperature - self._primary_threshold:
-            effective_mode = HVACMode.HEAT
+            # If it's hot outside, prefer cooling even if indoor temperature is below target
+            if is_hot_outside:
+                effective_mode = HVACMode.COOL
+                _LOGGER.debug(
+                    "Using cooling instead of heating because outdoor temperature (%s) is above threshold (%s)",
+                    outdoor_temp, self._outdoor_hot_threshold
+                )
+            else:
+                effective_mode = HVACMode.HEAT
             diff = self._attr_target_temperature - self._attr_current_temperature
 
         elif self._attr_current_temperature > self._attr_target_temperature + self._primary_threshold:
             diff = self._attr_current_temperature - self._attr_target_temperature
-            effective_mode = HVACMode.OFF
 
-            if self._outdoor_sensor:
-                outdoor_state = self.hass.states.get(self._outdoor_sensor)
-                if outdoor_state is not None and outdoor_state.state not in ["unknown", "unavailable"]:
-                    try:
-                        outdoor_temp = float(outdoor_state.state)
-                    except Exception as e:
-                        _LOGGER.error("Error reading outdoor sensor %s: %s", self._outdoor_sensor, e)
-                        outdoor_temp = None
-                else:
-                    _LOGGER.error("Outdoor sensor %s not found or state is unknown/unavailable", self._outdoor_sensor)
-                    outdoor_temp = None
-
-                if outdoor_temp is not None and outdoor_temp >= self._outdoor_hot_threshold:
-                    effective_mode = HVACMode.COOL
-                else:
-                    _LOGGER.debug(
-                        "Cooling suppressed: outdoor temperature (%s) below threshold (%s)",
-                        outdoor_temp, self._outdoor_hot_threshold
-                    )
+            # If it's hot outside, use cooling
+            if is_hot_outside:
+                effective_mode = HVACMode.COOL
+            else:
+                effective_mode = HVACMode.OFF
+                _LOGGER.debug(
+                    "Cooling suppressed: outdoor temperature (%s) below threshold (%s)",
+                    outdoor_temp, self._outdoor_hot_threshold
+                )
         else:
             effective_mode = HVACMode.OFF
             diff = 0
@@ -282,18 +291,22 @@ class SmartClimate(ClimateEntity, RestoreEntity):
         )
 
         # Signal main climate device only if a change is required.
-        if effective_mode != self._last_main_mode:
+        main_state = self.hass.states.get(self.effective_main_device)
+        if main_state is None:
+            _LOGGER.error("Main climate device %s not found", self.effective_main_device)
+            return
+
+        if main_state.state != effective_mode:
             await self._set_effective_main_hvac_mode(effective_mode)
-            self._last_main_mode = effective_mode
         else:
             _LOGGER.debug("Main device HVAC mode remains %s; no update required", effective_mode)
 
         if effective_mode != HVACMode.OFF and self._attr_target_temperature is not None:
             # Apply the primary offset here.
             main_target = self._attr_target_temperature + self._primary_offset
-            if self._last_main_temp != main_target:
+            current_temp = main_state.attributes.get("temperature")
+            if current_temp != main_target:
                 await self._set_effective_main_temperature(main_target)
-                self._last_main_temp = main_target
             else:
                 _LOGGER.debug("Main device temperature remains %s; no update required", main_target)
 
@@ -302,12 +315,18 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             secondary_effective_mode = effective_mode if diff > self._secondary_threshold else HVACMode.OFF
             # Apply the secondary offset here.
             secondary_temp = (self._attr_target_temperature + self._secondary_offset) if secondary_effective_mode != HVACMode.OFF else None
-            if (secondary_effective_mode != self._last_secondary_mode) or (secondary_temp != self._last_secondary_temp):
-                await self._set_effective_secondary(secondary_effective_mode, secondary_temp)
-                self._last_secondary_mode = secondary_effective_mode
-                self._last_secondary_temp = secondary_temp
+
+            secondary_state = self.hass.states.get(self.effective_secondary_device)
+            if secondary_state is None:
+                _LOGGER.error("Secondary climate device %s not found", self.effective_secondary_device)
             else:
-                _LOGGER.debug("Secondary device state remains unchanged; no update required")
+                current_secondary_mode = secondary_state.state
+                current_secondary_temp = secondary_state.attributes.get("temperature") if current_secondary_mode != HVACMode.OFF else None
+
+                if (secondary_effective_mode != current_secondary_mode) or (secondary_temp != current_secondary_temp):
+                    await self._set_effective_secondary(secondary_effective_mode, secondary_temp)
+                else:
+                    _LOGGER.debug("Secondary device state remains unchanged; no update required")
 
         if effective_mode != HVACMode.OFF:
             self._last_switch_time = now_time
