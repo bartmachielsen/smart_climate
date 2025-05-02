@@ -27,8 +27,10 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_TEMP_THRESHOLD_PRIMARY, default=DEFAULT_TEMP_THRESHOLD_PRIMARY): vol.Coerce(float),
     vol.Optional(CONF_TEMP_THRESHOLD_SECONDARY, default=DEFAULT_TEMP_THRESHOLD_SECONDARY): vol.Coerce(float),
     vol.Optional(CONF_OUTDOOR_HOT_THRESHOLD, default=DEFAULT_OUTDOOR_HOT_THRESHOLD): vol.Coerce(float),
-    vol.Optional(CONF_PRIMARY_OFFSET, default=DEFAULT_PRIMARY_OFFSET): vol.Coerce(float),
-    vol.Optional(CONF_SECONDARY_OFFSET, default=DEFAULT_SECONDARY_OFFSET): vol.Coerce(float),
+    vol.Optional(CONF_PRIMARY_HEATING_OFFSET, default=DEFAULT_PRIMARY_HEATING_OFFSET): vol.Coerce(float),
+    vol.Optional(CONF_PRIMARY_COOLING_OFFSET, default=DEFAULT_PRIMARY_COOLING_OFFSET): vol.Coerce(float),
+    vol.Optional(CONF_SECONDARY_HEATING_OFFSET, default=DEFAULT_SECONDARY_HEATING_OFFSET): vol.Coerce(float),
+    vol.Optional(CONF_SECONDARY_COOLING_OFFSET, default=DEFAULT_SECONDARY_COOLING_OFFSET): vol.Coerce(float),
     vol.Optional(CONF_MAIN_MIN_TEMP, default=DEFAULT_MAIN_MIN_TEMP): vol.Coerce(float),
     vol.Optional(CONF_MAIN_MAX_TEMP, default=DEFAULT_MAIN_MAX_TEMP): vol.Coerce(float),
     vol.Optional(CONF_SECONDARY_MIN_TEMP, default=DEFAULT_SECONDARY_MIN_TEMP): vol.Coerce(float),
@@ -57,8 +59,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     heating_presets = config.get(CONF_HEATING_PRESETS, DEFAULT_HEATING_PRESETS)
     cooling_presets = config.get(CONF_COOLING_PRESETS, DEFAULT_COOLING_PRESETS)
     outdoor_hot_threshold = config.get(CONF_OUTDOOR_HOT_THRESHOLD)
-    primary_offset = config.get(CONF_PRIMARY_OFFSET, DEFAULT_PRIMARY_OFFSET)
-    secondary_offset = config.get(CONF_SECONDARY_OFFSET, DEFAULT_SECONDARY_OFFSET)
+    primary_heating_offset = config.get(CONF_PRIMARY_HEATING_OFFSET, DEFAULT_PRIMARY_HEATING_OFFSET)
+    primary_cooling_offset = config.get(CONF_PRIMARY_COOLING_OFFSET, DEFAULT_PRIMARY_COOLING_OFFSET)
+    secondary_heating_offset = config.get(CONF_SECONDARY_HEATING_OFFSET, DEFAULT_SECONDARY_HEATING_OFFSET)
+    secondary_cooling_offset = config.get(CONF_SECONDARY_COOLING_OFFSET, DEFAULT_SECONDARY_COOLING_OFFSET)
     main_min_temp = config.get(CONF_MAIN_MIN_TEMP, DEFAULT_MAIN_MIN_TEMP)
     main_max_temp = config.get(CONF_MAIN_MAX_TEMP, DEFAULT_MAIN_MAX_TEMP)
     secondary_min_temp = config.get(CONF_SECONDARY_MIN_TEMP, DEFAULT_SECONDARY_MIN_TEMP)
@@ -83,8 +87,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             heating_presets,
             cooling_presets,
             outdoor_hot_threshold,
-            primary_offset,
-            secondary_offset,
+            primary_heating_offset,
+            primary_cooling_offset,
+            secondary_heating_offset,
+            secondary_cooling_offset,
             main_min_temp,
             main_max_temp,
             secondary_min_temp,
@@ -103,6 +109,8 @@ class SmartClimate(ClimateEntity, RestoreEntity):
     def __init__(self, hass, main_climate, secondary_climate, sensor, outdoor_sensor,
                  primary_threshold, secondary_threshold, heating_presets, cooling_presets,
                  outdoor_hot_threshold, primary_offset, secondary_offset,
+                 primary_heating_offset, primary_cooling_offset,
+                 secondary_heating_offset, secondary_cooling_offset,
                  main_min_temp, main_max_temp, secondary_min_temp, secondary_max_temp,
                  secondary_supports_cooling):
         self.hass = hass
@@ -118,9 +126,11 @@ class SmartClimate(ClimateEntity, RestoreEntity):
 
         # We'll check actual device states to avoid redundant service calls.
 
-        # Offsets for target temperature.
-        self._primary_offset = primary_offset
-        self._secondary_offset = secondary_offset
+        # Separate offsets for heating and cooling
+        self._primary_heating_offset = primary_heating_offset
+        self._primary_cooling_offset = primary_cooling_offset
+        self._secondary_heating_offset = secondary_heating_offset
+        self._secondary_cooling_offset = secondary_cooling_offset
 
         # Min/max temperatures for both devices
         self._main_min_temp = main_min_temp
@@ -371,7 +381,13 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             _LOGGER.debug("Main device HVAC mode remains %s; no update required", effective_mode)
 
         if effective_mode != HVACMode.OFF and self._attr_target_temperature is not None:
-            await self._set_effective_main_temperature(self._attr_target_temperature)
+            # Apply primary offset based on mode
+            primary_temp = self._attr_target_temperature
+            if effective_mode == HVACMode.HEAT:
+                primary_temp += self._primary_heating_offset
+            elif effective_mode == HVACMode.COOL:
+                primary_temp -= self._primary_cooling_offset
+            await self._set_effective_main_temperature(primary_temp)
 
         # Signal secondary device only if configured and a change is required.
         if self._secondary_climate is not None:
@@ -381,7 +397,12 @@ class SmartClimate(ClimateEntity, RestoreEntity):
             # Apply the secondary offset here.
             secondary_temp = None
             if secondary_effective_mode != HVACMode.OFF and self._attr_target_temperature is not None:
-                secondary_temp = self._attr_target_temperature + self._secondary_offset
+                secondary_temp = self._attr_target_temperature
+                # Apply secondary offset based on mode
+                if secondary_effective_mode == HVACMode.HEAT:
+                    secondary_temp += self._secondary_heating_offset
+                elif secondary_effective_mode == HVACMode.COOL:
+                    secondary_temp -= self._secondary_cooling_offset
 
             secondary_state = self.hass.states.get(self.effective_secondary_device)
             if secondary_state is None:
